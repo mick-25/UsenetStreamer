@@ -146,6 +146,68 @@ const QUALITY_SCORE_MAP = RESOLUTION_PREFERENCES.reduce((acc, label, index) => {
   return acc;
 }, {});
 
+// Audio codec detection
+const AUDIO_CODECS = [
+  { name: 'Atmos', patterns: [/atmos/i, /dd\+?atmos/i] },
+  { name: 'DTS-HD.MA', patterns: [/dts[\s.-]?hd[\s.-]?ma/i, /dts-hd\.ma/i] },
+  { name: 'DTS-HD.HRA', patterns: [/dts[\s.-]?hd[\s.-]?hra/i] },
+  { name: 'DTS-X', patterns: [/dts[\s.-]?x\b/i] },
+  { name: 'TrueHD', patterns: [/truehd/i, /true[\s.-]?hd/i] },
+  { name: 'DTS', patterns: [/\bdts\b/i] },
+  { name: 'DD+', patterns: [/dd\+|ddp|e-?ac-?3/i] },
+  { name: 'DD', patterns: [/\bdd[\s.]?[257]\.?[01]\b/i, /ac-?3/i] },
+  { name: 'AAC', patterns: [/\baac\b/i] },
+  { name: 'MP3', patterns: [/\bmp3\b/i] },
+  { name: 'FLAC', patterns: [/\bflac\b/i] },
+  { name: 'PCM', patterns: [/\bpcm\b/i] },
+];
+
+// Video codec detection
+const VIDEO_CODECS = [
+  { name: 'HEVC', patterns: [/\bhevc\b/i, /\bh\.?265\b/i, /\bx265\b/i] },
+  { name: 'AVC', patterns: [/\bavc\b/i, /\bh\.?264\b/i, /\bx264\b/i] },
+  { name: 'AV1', patterns: [/\bav1\b/i] },
+  { name: 'VP9', patterns: [/\bvp9\b/i] },
+  { name: 'MPEG-2', patterns: [/mpeg-?2/i] },
+];
+
+// Source detection
+const SOURCES = [
+  { name: 'Remux', patterns: [/remux/i], rank: 10 },
+  { name: 'BluRay', patterns: [/blu-?ray/i, /\bbrrip\b/i, /\bbdrip\b/i], rank: 9 },
+  { name: 'WEB-DL', patterns: [/web-?dl/i, /webdl/i], rank: 8 },
+  { name: 'WEBRip', patterns: [/web-?rip/i, /webrip/i], rank: 7 },
+  { name: 'HDTV', patterns: [/hdtv/i], rank: 6 },
+  { name: 'DVDRip', patterns: [/dvdrip/i], rank: 5 },
+  { name: 'DVD', patterns: [/\bdvd\b/i], rank: 4 },
+  { name: 'CAM', patterns: [/\bcam\b/i, /hdcam/i], rank: 2 },
+  { name: 'TS', patterns: [/\bts\b/i, /telesync/i], rank: 1 },
+];
+
+// HDR detection
+const HDR_TYPES = [
+  { name: 'DV', patterns: [/\bdv\b/i, /dolby[\s.-]?vision/i, /dovi/i] },
+  { name: 'HDR10+', patterns: [/hdr10\+/i, /hdr10plus/i] },
+  { name: 'HDR10', patterns: [/hdr10\b/i] },
+  { name: 'HDR', patterns: [/\bhdr\b/i] },
+  { name: 'HLG', patterns: [/\bhlg\b/i] },
+  { name: 'SDR', patterns: [/\bsdr\b/i] },
+];
+
+// Edition detection
+const EDITIONS = [
+  'IMAX',
+  'Extended',
+  'Director\'s Cut',
+  'Theatrical',
+  'Unrated',
+  'Remastered',
+  'Hybrid',
+  'Criterion',
+  'Uncut',
+  'Anniversary'
+];
+
 function buildLanguagePattern(token) {
   if (token instanceof RegExp) return token;
   const normalized = token.trim().toLowerCase();
@@ -211,6 +273,49 @@ function normalizeResolutionLabel(label) {
   return null;
 }
 
+function detectPattern(title, patterns) {
+  for (const item of patterns) {
+    if (item.patterns.some(p => p.test(title))) {
+      return item.name;
+    }
+  }
+  return null;
+}
+
+function detectAudioCodec(title) {
+  return detectPattern(title, AUDIO_CODECS);
+}
+
+function detectVideoCodec(title) {
+  return detectPattern(title, VIDEO_CODECS);
+}
+
+function detectSource(title) {
+  const match = SOURCES.find(s => s.patterns.some(p => p.test(title)));
+  return match ? { name: match.name, rank: match.rank } : null;
+}
+
+function detectHDR(title) {
+  return detectPattern(title, HDR_TYPES);
+}
+
+function detectEdition(title) {
+  const found = [];
+  for (const edition of EDITIONS) {
+    const pattern = new RegExp(`\\b${edition.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (pattern.test(title)) {
+      found.push(edition);
+    }
+  }
+  return found.length > 0 ? found : null;
+}
+
+function extractReleaseGroup(title) {
+  // Release group is usually at the end after a dash or in brackets
+  const match = title.match(/[-.]([A-Za-z0-9]+)$/);
+  return match ? match[1] : null;
+}
+
 function parseReleaseMetadata(title) {
   const rawTitle = typeof title === 'string' ? title : '';
   const parsed = (() => {
@@ -220,16 +325,32 @@ function parseReleaseMetadata(title) {
       return {};
     }
   })();
+  
   const resolution = detectResolution(rawTitle, parsed);
   const languages = detectLanguages(rawTitle);
   const qualityLabel = parsed.quality || parsed.source || parsed.codec || null;
   const qualityScore = QUALITY_SCORE_MAP[resolution] || 0;
+  
+  // NEW EXTRACTIONS
+  const audioCodec = detectAudioCodec(rawTitle);
+  const videoCodec = detectVideoCodec(rawTitle);
+  const source = detectSource(rawTitle);
+  const hdr = detectHDR(rawTitle);
+  const edition = detectEdition(rawTitle);
+  const releaseGroup = extractReleaseGroup(rawTitle);
 
   return {
     resolution,
     languages,
     qualityLabel,
     qualityScore,
+    audioCodec,
+    videoCodec,
+    source: source?.name || null,
+    sourceRank: source?.rank || 0,
+    hdr,
+    edition,
+    releaseGroup,
   };
 }
 
